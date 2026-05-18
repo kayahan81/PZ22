@@ -1,15 +1,15 @@
 ---
-# Практическое задание 21
+# Практическое задание 22
 
 ## ЭФМО-02-25 
 
 ## Алиев Каяхан Командар оглы
 ---
 # Тема работы
-HTTPS/TLS и защита от SQL-инъекций в серверном приложении.
+Браузерные угрозы CSRF/XSS и безопасная работа с cookies.
 
 ## Цели занятия
-Научиться включать защищённый транспорт (HTTPS) и устранять уязвимости SQL-инъекций, используя корректные методы работы с базой данных.
+Научиться безопасно использовать cookies в серверном приложении и внедрить практические меры защиты от CSRF и XSS.
 
 ## Структура проекта
 ```
@@ -65,6 +65,7 @@ C:.
 │   │   │   │       auth.go
 │   │   │   │
 │   │   │   ├───http
+│   │   │   ├───middleware
 │   │   │   └───service
 │   │   └───pkg
 │   │       └───authpb
@@ -92,7 +93,10 @@ C:.
 │           ├───http
 │           ├───middleware
 │           │       auth.go
+│           │       auth_cookie.go
+│           │       csrf.go
 │           │       metric.go
+│           │       security_headers.go
 │           │
 │           ├───migration
 │           │       001_create_tasks.sql
@@ -108,6 +112,9 @@ C:.
 │                   memory.go
 │
 └───shared
+    ├───csrf
+    │       generator.go
+    │
     ├───httpx
     │       client.go
     │
@@ -140,11 +147,11 @@ Go: версия 1.25.1
 # Команды запуска/сборки
 ## 1) Клонировать данный репозиторий в удобную для вас папку:
 ```Powershell
-git clone https://github.com/kayahan81/pz21
+git clone https://github.com/kayahan81/pz22
 ```
 ## 2) Перейти в папку pz19:
 ```Powershell
-cd pz21
+cd pz22
 ```
 ## 3) Загрузка зависимостей:
 ```Powershell
@@ -166,92 +173,36 @@ docker-compose up -d
 ```
 
 # Проверка работоспособности
-В качестве СУБД была выбрана PostgreSQL
-Сервис обработки задач разворачивается на docker
-## Создаём и просматриваем задачи
-<img width="754" height="754" alt="image" src="https://github.com/user-attachments/assets/956aca19-6ce6-4e1c-a206-ba979a6dc794" />
+## Получаем cookies (login)
+<img width="846" height="352" alt="image" src="https://github.com/user-attachments/assets/19984d48-0cb6-4061-b640-4d3a43ad552f" />
+## Проверка запроса без cookies (POST 403)
+<img width="803" height="351" alt="image" src="https://github.com/user-attachments/assets/5b0f368d-5c4d-4085-b021-69adce52de34" />
+## Корректный запрос (POST 201)
+<img width="795" height="451" alt="image" src="https://github.com/user-attachments/assets/b5d63822-b5e3-43ca-a1fe-4e1f4ec841f8" />
 
-## Нормальный поиск по названию
-<img width="704" height="639" alt="image" src="https://github.com/user-attachments/assets/35636f51-dd20-4462-b33d-dece2f8917e3" />
 
-## Демонстрация уязвимости на учебном стенде
-Видно, что по запросу выдаются все данные. Это плохо
-<img width="714" height="912" alt="image" src="https://github.com/user-attachments/assets/5e9406b2-e03e-4133-85f9-2831eac5de50" />  
-
-Если же попробовать тот же запрос в нормальном поиске - результат будет null
-<img width="703" height="537" alt="image" src="https://github.com/user-attachments/assets/1e720a71-3a68-41a2-a6ca-dddc0650121b" />
 
 # Отчёт
-- Был выбран NGINX как TLS-терминатор, потому что отделяет шифрование от логики приложения
-- Команды генерации сертификата (сертификат был добавлен в gitignore):
-```Powershell
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout key.pem \
-  -out cert.pem \
-  -days 365 \
-  -subj "/CN=localhost"
-```
-- Конфиг NGINX:
-```
-events {}
-
-http {
-    log_format main '$remote_addr - $remote_user [$time_local] '
-                    '"$request" $status $body_bytes_sent '
-                    '"$http_x_request_id"';
-
-    access_log /var/log/nginx/access.log main;
-
-    resolver 127.0.0.11 valid=30s;
-
-    server {
-        listen 8443 ssl;
-        server_name localhost;
-
-        ssl_certificate     /etc/nginx/tls/cert.pem;
-        ssl_certificate_key /etc/nginx/tls/key.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
-
-        location / {
-            set $upstream tasks:8082;
-            proxy_pass http://$upstream;
-            
-            proxy_set_header Host $host;
-            proxy_set_header X-Forwarded-Proto https;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Request-ID $http_x_request_id;
-            proxy_set_header Authorization $http_authorization;
-        }
-    }
-}
-```
-- Описание БД:
-Создаются база данных tasks_db и таблица tasks с полями id, title, description, due_date, done, created_at
-- Демонстрация SQLi
-fmt.Sprintf("SELECT id, title, description, due_date, done, created_at FROM tasks WHERE title LIKE '%%%s%%'", keyword)
-
-Исправленный код (параметризованный запрос с $1)
-query := `SELECT id, title, description, due_date, done, created_at FROM tasks WHERE title LIKE $1`
-rows, err := r.db.Query(query, "%"+keyword+"%")
-
-keyword передаётся как параметр, база данных не воспринимает его как исполняемый SQL код.
-
-Команда для проверки уязвимости в учебном стенде
-<img width="714" height="912" alt="image" src="https://github.com/user-attachments/assets/5e9406b2-e03e-4133-85f9-2831eac5de50" />  
-
+1.	Какие cookies используются и какие флаги установлены (HttpOnly/Secure/SameSite/Max-Age).
+session_id (HttpOnly, Secure, SameSite=Lax), csrf_token (Secure, SameSite=Lax, НЕ HttpOnly)
+2.	Какой CSRF подход выбран и как он работает (double submit).
+Double Submit Cookie — сервер выдаёт csrf_token в cookie, клиент отправляет его в заголовке X-CSRF-Token
+3.	Примеры запросов:
+См. пункт "Проверка работоспособности"
+4.	Что сделано для XSS (правило обработки description и/или заголовки безопасности).
+Приняты меры: экранирование через html.EscapeString + заголовки X-Content-Type-Options, CSP, X-Frame-Options
 
 
 # Ответы на вопросы
-1.	Какие свойства даёт TLS соединению?
-TLS обеспечивает шифрование данных между клиентом и сервером, защиту от подслушивания и гарантию, что клиент общается с подлинным сервером, а не с злоумышленником.
-2.	Почему самоподписанный сертификат не подходит для реального продакшна?
-Самоподписанный сертификат не подходит для продакшна, потому что он не подтверждён доверенным центром сертификации, и браузеры/клиенты будут показывать предупреждение о небезопасном соединении, а также отсутствует возможность отзыва сертификата при компрометации ключа.
-3.	В чём отличие TLS-терминации на NGINX от TLS в приложении?
-При TLS-терминации на NGINX шифрование снимается на уровне прокси и дальше внутри сети трафик идёт по HTTP, что позволяет централизованно управлять сертификатами; при TLS в приложении каждый сервис сам отвечает за шифрование, что усложняет управление сертификатами и увеличивает нагрузку.
-4.	Как возникает SQL-инъекция?
-SQL-инъекция возникает, когда приложение склеивает строку запроса с пользовательским вводом, позволяя злоумышленнику подменить условие или выполнить произвольный SQL-код, например введя ' OR '1'='1.
-5.	Почему параметризованный запрос защищает от SQLi?
-Параметризованный запрос защищает от SQLi, потому что пользовательский ввод передаётся как параметр, а не как часть SQL-кода, поэтому база данных воспринимает его как данные, а не как исполняемые команды.
-6.	Почему детали ошибок БД нельзя показывать клиенту?
-Детали ошибок БД нельзя показывать клиенту, потому что они могут раскрыть структуру таблиц, имена полей или другую внутреннюю информацию, что поможет злоумышленнику подготовить более точную атаку, а в логах нужно фиксировать подробности для диагностики.
+1.	Почему CSRF возможен при использовании cookies?
+CSRF возможен, потому что браузер автоматически прикрепляет cookies к запросам на ваш домен, даже если запрос инициирован с вредоносного сайта, что позволяет злоумышленнику «заставить» браузер жертвы отправить аутентифицированный запрос без её ведома.
+2.	Что делает флаг SameSite и какие есть режимы?
+Флаг SameSite ограничивает отправку cookies при кросс-сайтовых запросах; режим Lax — разумный минимум для большинства сценариев, Strict — максимально строгий (может ломать UX), а None — разрешает отправку всегда, но требует флага Secure.
+3.	Чем HttpOnly защищает от XSS и почему он не “лечит” XSS полностью?
+HttpOnly запрещает JavaScript читать cookie, что снижает риск кражи сессии при XSS, но не лечит XSS полностью, потому что злоумышленник всё равно может выполнить вредоносный код от имени пользователя (например, сделать запросы от его лица), просто не сможет украсть саму cookie.
+4.	Почему Secure обязателен, если cookie несёт сессию?
+Secure обязателен для сессионной cookie, потому что иначе она будет передаваться по незашифрованному HTTP-соединению, и злоумышленник может перехватить её (например, при атаке Man-in-the-Middle).
+5.	Как работает double-submit CSRF защита?
+Double-submit CSRF защита работает так: сервер выдаёт CSRF cookie и одновременно отдаёт его значение клиенту; на каждый опасный запрос клиент отправляет заголовок X-CSRF-Token с этим значением, а сервер сравнивает его со значением в cookie — вредоносный сайт не может прочитать cookie другого домена и сформировать правильный заголовок.
+6.	Что такое XSS и какие базовые меры защиты применимы на backend?
+XSS — это атака, при которой злоумышленник внедряет вредоносный код в веб-страницу; на backend базовые меры включают экранирование/санитизацию пользовательского ввода (например, замена <script> на безопасные сущности) и добавление заголовков безопасности вроде Content-Security-Policy.
