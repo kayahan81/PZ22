@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,12 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// Санитизация description
+func sanitizeDescription(desc string) string {
+	// Экранируем HTML теги
+	return html.EscapeString(desc)
+}
 
 type TasksHandler struct {
 	repo repository.TaskRepository // ← просто используем существующий интерфейс
@@ -84,6 +91,8 @@ func (h *TasksHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"title is required"}`, http.StatusBadRequest)
 		return
 	}
+
+	task.Description = sanitizeDescription(task.Description)
 
 	created, err := h.repo.Create(task)
 	if err != nil {

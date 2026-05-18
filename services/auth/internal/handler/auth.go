@@ -8,6 +8,7 @@ import (
 	"tech-ip-sem2/shared/logger"
 	"tech-ip-sem2/shared/middleware"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -39,6 +40,7 @@ func NewAuthHandler(log *zap.Logger) *AuthHandler {
 	}
 }
 
+// Login выдаёт session cookie и csrf_token cookie + access_token для совместимости
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	requestID := middleware.GetRequestID(r.Context())
 	log := logger.WithRequestID(h.log, requestID)
@@ -52,6 +54,33 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("login attempt", zap.String("username", req.Username))
 
+	// Генерируем session ID и CSRF токен
+	sessionID := uuid.New().String()
+	csrfToken := uuid.New().String()
+
+	// 1. Session cookie (HttpOnly, Secure, SameSite=Lax)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_id",
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,                 // JS не может прочитать
+		Secure:   true,                 // только по HTTPS
+		SameSite: http.SameSiteLaxMode, // Lax для обычной навигации
+		MaxAge:   3600,                 // 1 час
+	})
+
+	// 2. CSRF token cookie (НЕ HttpOnly, Secure, SameSite=Lax)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "csrf_token",
+		Value:    csrfToken,
+		Path:     "/",
+		HttpOnly: false, // JS может прочитать (для отправки в заголовке)
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   3600,
+	})
+
+	// 3. Access token для совместимости с существующими клиентами (Tasks gRPC)
 	resp := LoginResponse{
 		AccessToken: validToken,
 		TokenType:   "Bearer",
@@ -60,13 +89,32 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 
-	log.Info("login successful", zap.String("username", req.Username))
+	log.Info("login successful",
+		zap.String("username", req.Username),
+		zap.String("session_id", sessionID),
+	)
 }
 
+// Verify — для совместимости с gRPC и HTTP клиентами (Bearer token)
 func (h *AuthHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	requestID := middleware.GetRequestID(r.Context())
 	log := logger.WithRequestID(h.log, requestID)
 
+	// Сначала проверяем session cookie (если есть)
+	sessionCookie, err := r.Cookie("session_id")
+	if err == nil && sessionCookie.Value != "" {
+		// Аутентификация через cookie успешна
+		log.Info("session verified via cookie", zap.String("session_id", sessionCookie.Value))
+		resp := VerifyResponse{
+			Valid:   true,
+			Subject: "student",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Если нет cookie, проверяем Bearer token (для совместимости с gRPC) (большая уязвимость для учебного стенда)
 	authHeader := r.Header.Get("Authorization")
 
 	resp := VerifyResponse{}
